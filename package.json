@@ -1,0 +1,25 @@
+{
+  "name": "chinese-text-tools",
+  "version": "1.0.0",
+  "description": "Claude Code 中文写作工具箱 — 文本分析 · 大纲生成 · GB/T7714引用 · 字频统计",
+  "type": "module",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": ["mcp", "claude-code", "chinese", "writing", "academic", "novel", "gbt7714", "text-analysis", "model-context-protocol"],
+  "author": "",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": ""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^4.4.3"
+  }
+}
