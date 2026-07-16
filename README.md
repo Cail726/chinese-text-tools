@@ -2,8 +2,18 @@
 
 > Claude Code 中文写作四合一工具箱 — 文本分析 · 大纲生成 · 引用格式 · 字频统计
 
+[![npm version](https://img.shields.io/npm/v/chinese-text-tools)](https://www.npmjs.com/package/chinese-text-tools)
+[![GitHub stars](https://img.shields.io/github/stars/Cail726/chinese-text-tools)](https://github.com/Cail726/chinese-text-tools)
+[![AgentStore](https://img.shields.io/badge/AgentStore-install-blue)](https://agentstore.tools)
+
 ## 安装
 
+### 方式一：AgentStore 一键安装（推荐）
+```bash
+agentstore install cail726.chinese-text-tools
+```
+
+### 方式二：npx 直接运行
 ```bash
 claude mcp add chinese-text-tools -- npx chinese-text-tools
 ```
@@ -19,6 +29,14 @@ claude mcp add chinese-text-tools -- npx chinese-text-tools
     }
   }
 }
+```
+
+### 方式三：克隆源码
+```bash
+git clone https://github.com/Cail726/chinese-text-tools.git
+cd chinese-text-tools
+npm install
+node index.js
 ```
 
 ## 四个工具

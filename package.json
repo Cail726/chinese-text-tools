@@ -16,7 +16,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": ""
+    "url": "https://github.com/Cail726/chinese-text-tools"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
