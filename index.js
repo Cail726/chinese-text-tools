@@ -193,7 +193,7 @@ function countFrequency(text, topN = 20) {
 // ─── 创建 MCP Server ──────────────────────────
 function createMcpServer() {
   const server = new Server(
-    { name: "chinese-text-tools", version: "1.0.1" },
+    { name: "chinese-text-tools", version: "1.0.3" },
     { capabilities: { tools: {} } }
   );
 
@@ -379,7 +379,7 @@ async function startHttp() {
   const app = createMcpExpressApp({ host: HOST });
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", name: "chinese-text-tools", version: "1.0.1" });
+    res.json({ status: "ok", name: "chinese-text-tools", version: "1.0.3" });
   });
 
   const server = createMcpServer();
