@@ -147,21 +147,27 @@ function generateOutline(topic, type, detailLevel) {
 }
 
 // ─── GB/T 7714 参考文献格式化 ──────────────────
+function optional(prefix, value, suffix = "") {
+  return value ? `${prefix}${value}${suffix}` : "";
+}
+
 function formatGbt7714({ authors, title, journal, year, volume, issue, pages, doi, url, accessDate, type }) {
   const authorStr = Array.isArray(authors) ? authors.join("; ") : authors;
+  const volIssue = volume ? `${volume}${optional("(", issue, ")")}` : "";
 
   const formats = {
-    journal: `${authorStr}. ${title}[J]. ${journal}, ${year}, ${volume}(${issue || ""}): ${pages || ""}.`,
+    journal: `${authorStr}. ${title}[J]. ${journal}, ${year}${optional(", ", volIssue)}${optional(": ", pages)}.`,
     book: `${authorStr}. ${title}[M]. ${journal}, ${year}.`,
     thesis: `${authorStr}. ${title}[D]. ${journal}, ${year}.`,
     patent: `${authorStr}. ${title}[P]. ${year}.`,
     standard: `${authorStr}. ${title}[S]. ${journal}, ${year}.`,
-    online: `${authorStr}. ${title}[EB/OL]. (${year})[${accessDate || "引用日期"}]. ${url || ""}.`,
-    conference: `${authorStr}. ${title}[C]. ${journal}, ${year}: ${pages || ""}.`,
+    online: `${authorStr}. ${title}[EB/OL]. (${year})[${accessDate || "引用日期"}]${optional(". ", url)}.`,
+    conference: `${authorStr}. ${title}[C]. ${journal}, ${year}${optional(": ", pages)}.`,
   };
 
   let result = formats[type] || formats.journal;
   if (doi) result += ` DOI: ${doi}.`;
+  if (url && type !== "online") result += ` ${url}.`;
   return result;
 }
 
@@ -187,7 +193,7 @@ function countFrequency(text, topN = 20) {
 // ─── 创建 MCP Server ──────────────────────────
 function createMcpServer() {
   const server = new Server(
-    { name: "chinese-text-tools", version: "1.0.0" },
+    { name: "chinese-text-tools", version: "1.0.1" },
     { capabilities: { tools: {} } }
   );
 
@@ -216,7 +222,7 @@ function createMcpServer() {
             type: {
               type: "string",
               enum: ["paper", "novel", "business"],
-              description: "大纲类型",
+              description: "大纲类型，默认 paper",
             },
             detailLevel: {
               type: "string",
@@ -224,7 +230,7 @@ function createMcpServer() {
               description: "详细程度，默认 detailed",
             },
           },
-          required: ["topic", "type"],
+          required: ["topic"],
         },
       },
       {
@@ -333,6 +339,15 @@ function createMcpServer() {
         for (const item of result.topFrequent) {
           output += `  ${item.char} — ${item.count}次 (${item.percentage})\n`;
         }
+        const overused = result.topFrequent.filter(
+          (item) => parseFloat(item.percentage) > 3
+        );
+        if (overused.length > 0) {
+          output += `\n⚠ 以下字占比超过 3%，可能存在过度使用：\n`;
+          for (const item of overused) {
+            output += `  ${item.char} (${item.percentage}) — 建议检查替换\n`;
+          }
+        }
         return { content: [{ type: "text", text: output }] };
       }
 
@@ -349,7 +364,8 @@ function createMcpServer() {
 
 // ─── 启动模式选择 ─────────────────────────────
 const MODE = process.argv.includes("--http") || process.env.MCP_HTTP === "true" ? "http" : "stdio";
-const PORT = parseInt(process.env.PORT || "3000", 10);
+const rawPort = parseInt(process.env.PORT || "3000", 10);
+const PORT = Number.isNaN(rawPort) || rawPort < 1 || rawPort > 65535 ? 3000 : rawPort;
 const HOST = process.env.HOST || "127.0.0.1";
 
 async function startStdio() {
@@ -363,31 +379,57 @@ async function startHttp() {
   const app = createMcpExpressApp({ host: HOST });
 
   app.get("/health", (_req, res) => {
-    res.json({ status: "ok", name: "chinese-text-tools", version: "1.0.0" });
+    res.json({ status: "ok", name: "chinese-text-tools", version: "1.0.1" });
   });
 
   const server = createMcpServer();
   const transport = new StreamableHTTPServerTransport({
-    sessionIdGenerator: undefined, // stateless
+    sessionIdGenerator: undefined,
   });
   await server.connect(transport);
 
-  app.post("/mcp", (req, res) => {
-    transport.handleRequest(req, res, req.body);
+  app.post("/mcp", async (req, res) => {
+    try {
+      await transport.handleRequest(req, res, req.body);
+    } catch (err) {
+      console.error("MCP 请求处理失败:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
   });
 
-  app.get("/mcp", (req, res) => {
-    transport.handleRequest(req, res);
+  app.get("/mcp", async (req, res) => {
+    try {
+      await transport.handleRequest(req, res);
+    } catch (err) {
+      console.error("MCP GET 请求处理失败:", err.message);
+      if (!res.headersSent) {
+        res.status(500).json({ error: "Internal server error" });
+      }
+    }
   });
 
-  app.listen(PORT, HOST, () => {
-    console.error(`中文文本工具 MCP Server (HTTP) 已启动 → http://${HOST}:${PORT}/mcp`);
-    console.error(`健康检查: http://${HOST}:${PORT}/health`);
+  return new Promise((resolve, reject) => {
+    const httpServer = app.listen(PORT, HOST, () => {
+      console.error(`中文文本工具 MCP Server (HTTP) 已启动 → http://${HOST}:${PORT}/mcp`);
+      console.error(`健康检查: http://${HOST}:${PORT}/health`);
+      resolve();
+    });
+    httpServer.on("error", (err) => {
+      console.error("HTTP 服务器启动失败:", err.message);
+      reject(err);
+    });
   });
 }
 
-if (MODE === "http") {
-  await startHttp();
-} else {
-  await startStdio();
+try {
+  if (MODE === "http") {
+    await startHttp();
+  } else {
+    await startStdio();
+  }
+} catch (err) {
+  console.error("MCP Server 启动失败:", err.message);
+  process.exit(1);
 }
