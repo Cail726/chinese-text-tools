@@ -1,10 +1,43 @@
+#!/usr/bin/env node
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
+
+// ─── Zod 输入校验 ───────────────────────────────
+const AnalyzeTextSchema = z.object({
+  text: z.string().min(1, "文本不能为空"),
+});
+
+const GenerateOutlineSchema = z.object({
+  topic: z.string().min(1, "主题不能为空"),
+  type: z.enum(["paper", "novel", "business"]).default("paper"),
+  detailLevel: z.enum(["brief", "medium", "detailed"]).default("detailed"),
+});
+
+const FormatGbt7714Schema = z.object({
+  authors: z.string().min(1, "作者不能为空"),
+  title: z.string().min(1, "标题不能为空"),
+  journal: z.string().min(1, "期刊/出版社/学校不能为空"),
+  year: z.string().min(1, "年份不能为空"),
+  volume: z.string().optional(),
+  issue: z.string().optional(),
+  pages: z.string().optional(),
+  doi: z.string().optional(),
+  url: z.string().optional(),
+  accessDate: z.string().optional(),
+  type: z.enum(["journal", "book", "thesis", "patent", "standard", "online", "conference"]).default("journal"),
+});
+
+const CountFrequencySchema = z.object({
+  text: z.string().min(1, "文本不能为空"),
+  topN: z.number().int().min(1).max(500).default(20),
+});
 
 // ─── 中文文本分析 ───────────────────────────────
 function analyzeText(text) {
@@ -19,24 +52,20 @@ function analyzeText(text) {
     .filter((p) => p.trim().length > 0);
   const lines = text.split("\n").filter((l) => l.trim().length > 0);
 
-  // 中文阅读速度约 400字/分钟，英文约 200词/分钟
   const readingTimeMin = Math.ceil(
     (chineseChars + chinesePuncts) / 400 + englishWords / 200
   );
 
-  // 番茄/作家助手等编辑器通常把中文+标点一起算
   const editorWordCount = chineseChars + chinesePuncts;
   const avgParagraphLen = paragraphs.length > 0 ? Math.round(editorWordCount / paragraphs.length) : 0;
 
   return {
-    // 与主流编辑器对齐的字段
     editorWordCount,
     chineseChars,
     chinesePuncts,
     englishWords,
     digits,
     totalChars,
-    // 结构分析
     paragraphCount: paragraphs.length,
     lineCount: lines.length,
     avgParagraphLen,
@@ -118,8 +147,7 @@ function generateOutline(topic, type, detailLevel) {
 }
 
 // ─── GB/T 7714 参考文献格式化 ──────────────────
-function formatGbt7714({ authors, title, journal, year, volume, issue, pages, doi, url, type }) {
-  // GB/T 7714-2015 常用格式
+function formatGbt7714({ authors, title, journal, year, volume, issue, pages, doi, url, accessDate, type }) {
   const authorStr = Array.isArray(authors) ? authors.join("; ") : authors;
 
   const formats = {
@@ -128,19 +156,17 @@ function formatGbt7714({ authors, title, journal, year, volume, issue, pages, do
     thesis: `${authorStr}. ${title}[D]. ${journal}, ${year}.`,
     patent: `${authorStr}. ${title}[P]. ${year}.`,
     standard: `${authorStr}. ${title}[S]. ${journal}, ${year}.`,
-    online: `${authorStr}. ${title}[EB/OL]. (${year})[引用日期]. ${url || ""}.`,
+    online: `${authorStr}. ${title}[EB/OL]. (${year})[${accessDate || "引用日期"}]. ${url || ""}.`,
     conference: `${authorStr}. ${title}[C]. ${journal}, ${year}: ${pages || ""}.`,
   };
 
   let result = formats[type] || formats.journal;
-  // 始终先显示 GB/T 7714 格式，DOI 作为补充
   if (doi) result += ` DOI: ${doi}.`;
   return result;
 }
 
 // ─── 字频统计 ───────────────────────────────
 function countFrequency(text, topN = 20) {
-  // 仅统计中文字符
   const chineseOnly = text.match(/[\u4e00-\u9fff]/g) || [];
   const freq = {};
   for (const char of chineseOnly) {
@@ -159,150 +185,209 @@ function countFrequency(text, topN = 20) {
 }
 
 // ─── 创建 MCP Server ──────────────────────────
-const server = new Server(
-  { name: "chinese-text-tools", version: "1.0.0" },
-  { capabilities: { tools: {} } }
-);
+function createMcpServer() {
+  const server = new Server(
+    { name: "chinese-text-tools", version: "1.0.0" },
+    { capabilities: { tools: {} } }
+  );
 
-// 注册工具列表
-server.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: "analyze_text",
-      description:
-        "分析中文/英文混合文本。返回 editorWordCount（与番茄/作家助手对齐的字数）、段落数、平均段长、预估阅读时间。适用于小说章节、论文章节的快速评估。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "要分析的文本内容" },
-        },
-        required: ["text"],
-      },
-    },
-    {
-      name: "generate_outline",
-      description:
-        "根据主题生成结构化大纲。支持三种类型：paper（学术论文）、novel（小说）、business（商业计划书）。支持三级详细程度：brief（仅一级标题）、medium（二级）、detailed（三级）。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          topic: { type: "string", description: "主题/标题" },
-          type: {
-            type: "string",
-            enum: ["paper", "novel", "business"],
-            description: "大纲类型",
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+    tools: [
+      {
+        name: "analyze_text",
+        description:
+          "分析中文/英文混合文本。返回 editorWordCount（与番茄/作家助手对齐的字数）、段落数、平均段长、预估阅读时间。适用于小说章节、论文章节的快速评估。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "要分析的文本内容" },
           },
-          detailLevel: {
-            type: "string",
-            enum: ["brief", "medium", "detailed"],
-            description: "详细程度，默认 detailed",
+          required: ["text"],
+        },
+      },
+      {
+        name: "generate_outline",
+        description:
+          "根据主题生成结构化大纲。支持三种类型：paper（学术论文）、novel（小说）、business（商业计划书）。支持三级详细程度：brief（仅一级标题）、medium（二级）、detailed（三级）。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            topic: { type: "string", description: "主题/标题" },
+            type: {
+              type: "string",
+              enum: ["paper", "novel", "business"],
+              description: "大纲类型",
+            },
+            detailLevel: {
+              type: "string",
+              enum: ["brief", "medium", "detailed"],
+              description: "详细程度，默认 detailed",
+            },
           },
+          required: ["topic", "type"],
         },
-        required: ["topic", "type"],
       },
-    },
-    {
-      name: "format_gbt7714",
-      description:
-        "将文献信息格式化为 GB/T 7714-2015 标准引用格式（中文毕业论文通用格式）。支持期刊论文、图书、学位论文、专利、标准、在线资源、会议论文。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          authors: { type: "string", description: "作者，多人用分号分隔，如 '张三; 李四'" },
-          title: { type: "string", description: "文献标题" },
-          journal: { type: "string", description: "期刊名/出版社/学校名" },
-          year: { type: "string", description: "出版年份" },
-          volume: { type: "string", description: "卷号（期刊论文）" },
-          issue: { type: "string", description: "期号（期刊论文）" },
-          pages: { type: "string", description: "页码，如 '45-50'" },
-          doi: { type: "string", description: "DOI 号" },
-          url: { type: "string", description: "网址（在线资源）" },
-          type: {
-            type: "string",
-            enum: ["journal", "book", "thesis", "patent", "standard", "online", "conference"],
-            description: "文献类型，默认 journal",
+      {
+        name: "format_gbt7714",
+        description:
+          "将文献信息格式化为 GB/T 7714-2015 标准引用格式（中文毕业论文通用格式）。支持期刊论文、图书、学位论文、专利、标准、在线资源、会议论文。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            authors: { type: "string", description: "作者，多人用分号分隔，如 '张三; 李四'" },
+            title: { type: "string", description: "文献标题" },
+            journal: { type: "string", description: "期刊名/出版社/学校名" },
+            year: { type: "string", description: "出版年份" },
+            volume: { type: "string", description: "卷号（期刊论文）" },
+            issue: { type: "string", description: "期号（期刊论文）" },
+            pages: { type: "string", description: "页码，如 '45-50'" },
+            doi: { type: "string", description: "DOI 号" },
+            url: { type: "string", description: "网址（在线资源）" },
+            accessDate: { type: "string", description: "引用日期，如 '2025-07-17'（在线资源）" },
+            type: {
+              type: "string",
+              enum: ["journal", "book", "thesis", "patent", "standard", "online", "conference"],
+              description: "文献类型，默认 journal",
+            },
           },
+          required: ["authors", "title", "journal", "year"],
         },
-        required: ["authors", "title", "journal", "year"],
       },
-    },
-    {
-      name: "count_frequency",
-      description:
-        "统计中文文本的字频分布。用于分析写作风格、检测重复用词、优化文本表达。默认返回前20个高频字。",
-      inputSchema: {
-        type: "object",
-        properties: {
-          text: { type: "string", description: "要分析的文本" },
-          topN: { type: "number", description: "返回前N个高频字，默认20" },
+      {
+        name: "count_frequency",
+        description:
+          "统计中文文本的字频分布。用于分析写作风格、检测重复用词、优化文本表达。默认返回前20个高频字。",
+        inputSchema: {
+          type: "object",
+          properties: {
+            text: { type: "string", description: "要分析的文本" },
+            topN: { type: "number", description: "返回前N个高频字，默认20" },
+          },
+          required: ["text"],
         },
-        required: ["text"],
       },
-    },
-  ],
-}));
+    ],
+  }));
 
-// 注册工具调用处理
-server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name, arguments: args } = request.params;
+  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+    const { name, arguments: args } = request.params;
 
-  switch (name) {
-    case "analyze_text": {
-      const result = analyzeText(args.text);
-      return {
-        content: [
-          {
-            type: "text",
-            text: JSON.stringify(result, null, 2),
-          },
-        ],
-      };
-    }
-
-    case "generate_outline": {
-      const result = generateOutline(
-        args.topic,
-        args.type || "paper",
-        args.detailLevel || "detailed"
-      );
-      // 格式化输出
-      let output = `# ${result.title}\n\n`;
-      output += `> 类型: ${args.type} | 详细程度: ${result.detailLevel}\n`;
-      output += `> ${result.note}\n\n`;
-      for (const sec of result.sections) {
-        const prefix = sec.level === 1 ? "\n## " : sec.level === 2 ? "### " : "#### ";
-        output += `${prefix}${sec.title}\n`;
-        output += `*${sec.desc}*\n\n`;
+    switch (name) {
+      case "analyze_text": {
+        const parsed = AnalyzeTextSchema.safeParse(args);
+        if (!parsed.success) {
+          return {
+            content: [{ type: "text", text: `参数错误：${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}` }],
+            isError: true,
+          };
+        }
+        const result = analyzeText(parsed.data.text);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
-      return { content: [{ type: "text", text: output }] };
-    }
 
-    case "format_gbt7714": {
-      const result = formatGbt7714(args);
-      return { content: [{ type: "text", text: result }] };
-    }
-
-    case "count_frequency": {
-      const result = countFrequency(args.text, args.topN || 20);
-      let output = `总中文字符: ${result.totalChineseChars}\n`;
-      output += `不重复字符: ${result.uniqueChars}\n\n高频字 Top ${args.topN || 20}:\n`;
-      for (const item of result.topFrequent) {
-        output += `  ${item.char} — ${item.count}次 (${item.percentage})\n`;
+      case "generate_outline": {
+        const parsed = GenerateOutlineSchema.safeParse(args);
+        if (!parsed.success) {
+          return {
+            content: [{ type: "text", text: `参数错误：${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}` }],
+            isError: true,
+          };
+        }
+        const { topic, type, detailLevel } = parsed.data;
+        const result = generateOutline(topic, type, detailLevel);
+        let output = `# ${result.title}\n\n`;
+        output += `> 类型: ${type} | 详细程度: ${result.detailLevel}\n`;
+        output += `> ${result.note}\n\n`;
+        for (const sec of result.sections) {
+          const prefix = sec.level === 1 ? "\n## " : sec.level === 2 ? "### " : "#### ";
+          output += `${prefix}${sec.title}\n`;
+          output += `*${sec.desc}*\n\n`;
+        }
+        return { content: [{ type: "text", text: output }] };
       }
-      return { content: [{ type: "text", text: output }] };
+
+      case "format_gbt7714": {
+        const parsed = FormatGbt7714Schema.safeParse(args);
+        if (!parsed.success) {
+          return {
+            content: [{ type: "text", text: `参数错误：${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}` }],
+            isError: true,
+          };
+        }
+        const result = formatGbt7714(parsed.data);
+        return { content: [{ type: "text", text: result }] };
+      }
+
+      case "count_frequency": {
+        const parsed = CountFrequencySchema.safeParse(args);
+        if (!parsed.success) {
+          return {
+            content: [{ type: "text", text: `参数错误：${parsed.error.issues.map(i => `${i.path.join(".")}: ${i.message}`).join("; ")}` }],
+            isError: true,
+          };
+        }
+        const { text, topN } = parsed.data;
+        const result = countFrequency(text, topN);
+        let output = `总中文字符: ${result.totalChineseChars}\n`;
+        output += `不重复字符: ${result.uniqueChars}\n\n高频字 Top ${topN}:\n`;
+        for (const item of result.topFrequent) {
+          output += `  ${item.char} — ${item.count}次 (${item.percentage})\n`;
+        }
+        return { content: [{ type: "text", text: output }] };
+      }
+
+      default:
+        return {
+          content: [{ type: "text", text: `错误：未知工具 "${name}"。可用工具：analyze_text, generate_outline, format_gbt7714, count_frequency` }],
+          isError: true,
+        };
     }
+  });
 
-    default:
-      return {
-        content: [{ type: "text", text: `错误：未知工具 "${name}"。可用工具：analyze_text, generate_outline, format_gbt7714, count_frequency` }],
-        isError: true,
-      };
-  }
-});
+  return server;
+}
 
-// ─── 启动 ─────────────────────────────────────
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// ─── 启动模式选择 ─────────────────────────────
+const MODE = process.argv.includes("--http") || process.env.MCP_HTTP === "true" ? "http" : "stdio";
+const PORT = parseInt(process.env.PORT || "3000", 10);
+const HOST = process.env.HOST || "127.0.0.1";
 
-// 这行日志不会影响 MCP 协议（走 stderr）
-console.error("中文文本工具 MCP Server 已启动 ✓");
+async function startStdio() {
+  const server = createMcpServer();
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  console.error("中文文本工具 MCP Server (stdio) 已启动");
+}
+
+async function startHttp() {
+  const app = createMcpExpressApp({ host: HOST });
+
+  app.get("/health", (_req, res) => {
+    res.json({ status: "ok", name: "chinese-text-tools", version: "1.0.0" });
+  });
+
+  const server = createMcpServer();
+  const transport = new StreamableHTTPServerTransport({
+    sessionIdGenerator: undefined, // stateless
+  });
+  await server.connect(transport);
+
+  app.post("/mcp", (req, res) => {
+    transport.handleRequest(req, res, req.body);
+  });
+
+  app.get("/mcp", (req, res) => {
+    transport.handleRequest(req, res);
+  });
+
+  app.listen(PORT, HOST, () => {
+    console.error(`中文文本工具 MCP Server (HTTP) 已启动 → http://${HOST}:${PORT}/mcp`);
+    console.error(`健康检查: http://${HOST}:${PORT}/health`);
+  });
+}
+
+if (MODE === "http") {
+  await startHttp();
+} else {
+  await startStdio();
+}

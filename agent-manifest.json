@@ -58,6 +58,7 @@
                 "pages": { "type": "string", "description": "页码" },
                 "doi": { "type": "string", "description": "DOI 号" },
                 "url": { "type": "string", "description": "网址" },
+                "accessDate": { "type": "string", "description": "引用日期，如 '2025-07-17'（在线资源需要）" },
                 "type": { "type": "string", "enum": ["journal", "book", "thesis", "patent", "standard", "online", "conference"], "description": "文献类型" }
               },
               "required": ["authors", "title", "journal", "year"]
