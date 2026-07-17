@@ -1,6 +1,6 @@
 {
   "name": "chinese-text-tools",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Claude Code 中文写作工具箱 — 文本分析 · 大纲生成 · GB/T7714引用 · 字频统计",
   "type": "module",
   "main": "index.js",
